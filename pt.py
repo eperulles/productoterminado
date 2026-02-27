@@ -190,24 +190,15 @@ def detectar_camion_disponible(truck_packing_list):
         if not camiones_layout:
             return None
         
-        # 1. SI YA TIENE ESCANEOS PREVIOS EN LA DB:
-        # Mantener el camión físico donde ya empezó a escanear
-        conn = sqlite3.connect('scans.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT ubicacion 
-            FROM pallet_scans 
-            WHERE camion = ? 
-            AND ubicacion IS NOT NULL 
-            LIMIT 1
-        ''', (str(truck_packing_list),))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row and row[0]:
-            match = re.match(r'^(C\d+)-', row[0])
-            if match:
-                return match.group(1)
+        # 1. SI YA TIENE ESCANEOS PREVIOS EN MEMORIA (Ya sincronizados de Supabase):
+        # Buscar si el camión ya tiene al menos una ubicación asignada
+        for loc, assignments in st.session_state.pallet_assignments.items():
+            if assignments:
+                for a in assignments:
+                    if str(a.get('camion', '')) == str(truck_packing_list):
+                        match = re.match(r'^(C\d+)-', loc)
+                        if match:
+                            return match.group(1)
 
         # 2. SI ES NUEVO: Buscar el primer camión físico (C1, C2...) que esté libre
         # Un camión está libre si no tiene NINGÚN pallet de NINGÚN camión de packing list
