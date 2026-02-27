@@ -574,14 +574,14 @@ else:
     packing_df = st.session_state.packing_data
     pallet_summary = st.session_state.pallet_summary
 
-    if 'scans_db' not in st.session_state:
+    def refresh_supabase_data():
+        """Carga datos frescos de Supabase y sincroniza el estado local"""
         st.session_state.scans_db = set()
         st.session_state.pallet_assignments = {}
         st.session_state.delivered_trucks = set()
         try:
             supabase = get_supabase_client()
             if supabase:
-                # Cargar todos los registros de Supabase (escaneados y entregados)
                 resp = supabase.table('warehouse_occupancy').select('camion,pallet_number,ubicacion,slot,status').execute()
                 rows = resp.data or []
 
@@ -594,9 +594,8 @@ else:
 
                     if status == 'entregado':
                         st.session_state.delivered_trucks.add(camion)
-                        continue  # No cargar en mapa, espacio libre
+                        continue
 
-                    # Cargar en scans_db y pallet_assignments (solo escaneados)
                     st.session_state.scans_db.add((camion, pallet))
 
                     if ubicacion:
@@ -609,8 +608,19 @@ else:
                                 st.session_state.pallet_assignments[ubicacion] = [curr, assignment]
                         else:
                             st.session_state.pallet_assignments[ubicacion] = [assignment]
+                return True
         except Exception as e:
-            st.warning(f"⚠️ No se pudo cargar desde Supabase: {e}")
+            st.error(f"⚠️ Error sincronizando: {e}")
+            return False
+
+    if 'scans_db' not in st.session_state:
+        refresh_supabase_data()
+
+    # Botón de sincronización manual en el sidebar
+    if st.sidebar.button("🔄 Sincronizar Supabase", use_container_width=True):
+        if refresh_supabase_data():
+            st.sidebar.success("✅ Datos actualizados")
+            st.rerun()
  
     # Diagnóstico de Layout (Barra Lateral)
 
@@ -832,10 +842,13 @@ else:
                         
             # Marcar como entregado
             st.session_state.delivered_trucks.add(str(truck))
-                        
+
             # Actualizar Google Sheets
             update_shipment_status_async(truck, "Entregado")
-                        
+
+            # Refrescar datos frescos de Supabase
+            refresh_supabase_data()
+
             return True
         except Exception as e:
             st.error(f"Error al entregar camión: {e}")
@@ -1122,6 +1135,8 @@ else:
                                     if ubicacion:
                                         msg += f"  📍 Ubicación: {ubicacion} (Slot {slot})"
                                     st.session_state.scan_success_msg = msg
+                                    # Refrescar datos antes de re-renderizar para actualizar alertas de espacio
+                                    refresh_supabase_data()
                                     st.rerun()
                                 else:
                                     st.session_state.scan_error_msg = "❌ Error al registrar en base de datos"
