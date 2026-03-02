@@ -484,8 +484,8 @@ if 'pallet_assignments' not in st.session_state:
     st.session_state.pallet_assignments = {}
 if 'current_layout_type' not in st.session_state:
     st.session_state.current_layout_type = None
-if 'delivered_trucks' not in st.session_state:
-    st.session_state.delivered_trucks = set()
+if 'delivered_pallets' not in st.session_state:
+    st.session_state.delivered_pallets = set()
 if 'delivered_trucks' not in st.session_state:
     st.session_state.delivered_trucks = set()
 if 'camion_asignado_actual' not in st.session_state:
@@ -643,12 +643,12 @@ else:
                     return location, assignment.get('slot', 1)
         return None, None
 
-    def assign_pallet_location(truck_packing_list, pallet):
+    def assign_pallet_location(truck_packing_list, pallet, expected_pallets):
         if not st.session_state.layout_locations:
             return None, None
                     
-        # DETECTAR CAMIÓN DISPONIBLE AUTOMÁTICAMENTE (Usamos este pallet como clave única del proyecto)
-        camion_actual = detectar_camion_disponible(truck_packing_list, {str(pallet)})
+        # DETECTAR CAMIÓN DISPONIBLE AUTOMÁTICAMENTE (Usamos todos los pallets del proyecto para identificarlo)
+        camion_actual = detectar_camion_disponible(truck_packing_list, expected_pallets)
         if not camion_actual:
             st.error("❌ No hay camiones disponibles en el layout")
             return None, None
@@ -728,9 +728,9 @@ else:
             st.warning(f"⚠️ Error guardando en Supabase: {e}")
             return False
 
-    def register_pallet_scan(truck_packing_list, pallet, first_serial, last_serial):
+    def register_pallet_scan(truck_packing_list, pallet, first_serial, last_serial, expected_pallets):
         try:
-            ubicacion, slot = assign_pallet_location(truck_packing_list, pallet)
+            ubicacion, slot = assign_pallet_location(truck_packing_list, pallet, expected_pallets)
 
             def save_to_supabase():
                 try:
@@ -1039,10 +1039,7 @@ else:
                     if 'scan_error_msg' not in st.session_state:
                         st.session_state.scan_error_msg = ''
 
-                    # Mostrar mensaje de resultado del último escaneo
-                    if st.session_state.scan_success_msg:
-                        st.success(st.session_state.scan_success_msg)
-                        st.session_state.scan_success_msg = ''
+                    # Mostrar mensaje de error (éxito ahora va por st.toast)
                     if st.session_state.scan_error_msg:
                         st.error(st.session_state.scan_error_msg)
                         st.session_state.scan_error_msg = ''
@@ -1067,7 +1064,6 @@ else:
                             "Primer Serial del Pallet:",
                             key="_first_serial_widget",
                             on_change=on_first_serial_change,
-                            value='' if not st.session_state.scan_first else st.session_state.get('_first_serial_widget',''),
                             help="Escanea el primer serial y el escáner dará Enter."
                         )
                     with col2:
@@ -1079,31 +1075,34 @@ else:
                         )
 
                     # JS: mover foco al segundo campo después de que el primero fue escaneado
-                    if focus_last:
-                        st.components.v1.html("""
+                    # JS: Manejo de Foco Pro
+                    focus_script = """
                         <script>
                         (function() {
-                            function focusLast() {
-                                // Los inputs de Streamlit tienen aria-label igual al label del widget
+                            function doFocus() {
                                 var inputs = window.parent.document.querySelectorAll('input[type="text"]');
-                                // El segundo text_input visible en la página
                                 if (inputs.length >= 2) {
-                                    // Buscar el que corresponde al último serial
+                                    var firstInput = null;
+                                    var lastInput = null;
+                                    
                                     for (var i = 0; i < inputs.length; i++) {
                                         var label = inputs[i].getAttribute('aria-label') || '';
-                                        if (label.includes('ltimo') || label.includes('ltimo Serial')) {
-                                            inputs[i].focus();
-                                            return;
-                                        }
+                                        if (label.includes('Primer Serial')) firstInput = inputs[i];
+                                        if (label.includes('ltimo Serial')) lastInput = inputs[i];
                                     }
-                                    // Fallback: el último input visible
-                                    inputs[inputs.length - 1].focus();
+                                    
+                                    if ("{{FOCUS_LAST}}" === "true" && lastInput) {
+                                        lastInput.focus();
+                                    } else if (firstInput) {
+                                        firstInput.focus();
+                                    }
                                 }
                             }
-                            setTimeout(focusLast, 150);
+                            setTimeout(doFocus, 150);
                         })();
                         </script>
-                        """, height=0)
+                    """.replace("{{FOCUS_LAST}}", "true" if focus_last else "false")
+                    st.components.v1.html(focus_script, height=0)
 
                     # Procesar escaneo cuando el último serial está listo
                     if st.session_state.scan_ready:
@@ -1141,17 +1140,21 @@ else:
                             pallet_number = matching_pallet['Pallet number']
 
                             if not is_pallet_scanned(selected_truck, pallet_number):
+                                # Obtener todos los pallets esperados para este camión/proyecto
+                                expected_pallets = set(truck_pallets['Pallet number'].astype(str))
                                 success, ubicacion, slot = register_pallet_scan(
-                                    selected_truck, pallet_number, first_serial, last_serial
+                                    selected_truck, pallet_number, first_serial, last_serial, expected_pallets
                                 )
 
                                 if success:
                                     st.session_state.scanned_count += 1
-                                    msg = f"✅ Pallet {pallet_number} escaneado!"
-                                    if ubicacion:
-                                        msg += f"  📍 Ubicación: {ubicacion} (Slot {slot})"
-                                    st.session_state.scan_success_msg = msg
-                                    # Refrescar datos antes de re-renderizar para actualizar alertas de espacio
+                                    st.toast(f"✅ Pallet {pallet_number} escaneado!", icon='🎉')
+                                    # Limpiar widgets para el próximo escaneo
+                                    st.session_state._first_serial_widget = ""
+                                    st.session_state._last_serial_widget = ""
+                                    st.session_state.scan_first = ""
+                                    st.session_state.scan_last = ""
+                                    # Refrescar datos y re-renderizar para limpiar inputs y actualizar UI
                                     refresh_supabase_data()
                                     st.rerun()
                                 else:
