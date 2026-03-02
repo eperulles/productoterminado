@@ -734,23 +734,22 @@ else:
         try:
             ubicacion, slot = assign_pallet_location(truck_packing_list, pallet, expected_pallets)
 
-            def save_to_supabase():
-                try:
-                    supabase = get_supabase_client()
-                    if supabase:
-                        data = {
-                            "ubicacion": str(ubicacion) if ubicacion else None,
-                            "camion": str(truck_packing_list),
-                            "pallet_number": str(pallet),
-                            "slot": int(slot) if slot else 1,
-                            "project_id": "default",
-                            "status": "escaneado",
-                        }
-                        supabase.table('warehouse_occupancy').insert(data).execute()
-                except Exception as e:
-                    print(f"Error guardando en Supabase: {e}")
-
-            threading.Thread(target=save_to_supabase, daemon=True).start()
+            # Guardar en Supabase de forma SÍNCRONA para que el refresh posterior vea los datos
+            try:
+                supabase = get_supabase_client()
+                if supabase:
+                    data = {
+                        "ubicacion": str(ubicacion) if ubicacion else None,
+                        "camion": str(truck_packing_list),
+                        "pallet_number": str(pallet),
+                        "slot": int(slot) if slot else 1,
+                        "project_id": "default",
+                        "status": "escaneado",
+                    }
+                    supabase.table('warehouse_occupancy').insert(data).execute()
+            except Exception as e:
+                st.error(f"⚠️ Error guardando en Supabase: {e}")
+                return False, None, None
 
             st.session_state.scans_db.add((str(truck_packing_list), str(pallet)))
             return True, ubicacion, slot
@@ -812,20 +811,20 @@ else:
     def deliver_truck(truck, expected_pallets):
         """Marcar camión como entregado en Supabase y liberar memoria local"""
         try:
-            # Actualizar Supabase: marcar todos los pallets del camión como 'entregado'
-            def update_supabase_delivery():
-                try:
-                    supabase = get_supabase_client()
-                    if supabase:
-                        # Actualizamos por pallet_number para no interferir con otros proyectos
-                        # Si `in_()` solo soporta listas, la convertimos
-                        supabase.table('warehouse_occupancy') \
-                            .update({"status": "entregado"}) \
-                            .in_("pallet_number", list(expected_pallets)) \
-                            .execute()
-                except Exception as e:
-                    print(f"Error actualizando Supabase en entrega: {e}")
-            threading.Thread(target=update_supabase_delivery, daemon=True).start()
+            # Actualizar Supabase de forma SÍNCRONA
+            try:
+                supabase = get_supabase_client()
+                if supabase:
+                    # Actualizamos por pallet_number para no interferir con otros proyectos
+                    # Si `in_()` solo soporta listas, la convertimos
+                    supabase.table('warehouse_occupancy') \
+                        .update({"status": "entregado"}) \
+                        .in_("pallet_number", list(expected_pallets)) \
+                        .execute()
+            except Exception as e:
+                st.error(f"⚠️ Error actualizando Supabase en entrega: {e}")
+                return
+
             # Liberar asignaciones en memoria
             locations_to_remove = []
             for ubicacion, assignments in st.session_state.pallet_assignments.items():
