@@ -559,7 +559,12 @@ if not all_loaded:
 else:
     st.sidebar.success("✅ Layout y Datos Cargados")
     if st.sidebar.button("🔄 Cambiar Proyecto", type="primary", use_container_width=True):
-        keys_to_clear = ['layout_locations', 'layout_shapes', 'original_svg_content', 'shipment_data', 'packing_data', 'pallet_summary', 'current_layout_type', 'scans_db', 'pallet_assignments']
+        keys_to_clear = [
+            'layout_locations', 'layout_shapes', 'original_svg_content', 
+            'shipment_data', 'packing_data', 'pallet_summary', 'current_layout_type', 
+            'scans_db', 'pallet_assignments', 'delivered_pallets',
+            'current_truck', 'truck_pallets', 'camion_asignado_actual', 'scanned_count'
+        ]
         for k in keys_to_clear:
             if k in st.session_state:
                 del st.session_state[k]
@@ -887,17 +892,20 @@ else:
             )
 
             if selected_truck:
-                if st.session_state.current_truck != selected_truck:
+                if st.session_state.current_truck != selected_truck or 'truck_pallets' not in st.session_state:
                     st.session_state.current_truck = selected_truck
                     truck_data = available_trucks[available_trucks['CAMION'] == selected_truck].iloc[0]
                     st.session_state.truck_pallets = get_truck_pallets(truck_data, pallet_summary)
-                    st.session_state.scanned_count = sum(
-                        1 for _, row in st.session_state.truck_pallets.iterrows() 
-                        if is_pallet_scanned(selected_truck, row['Pallet number'])
-                    )
-                    # DETECTAR CAMIÓN DISPONIBLE PARA ESTE TRUCK (USANDO PALLETSESPERADOS)
-                    expected_pallets = set(st.session_state.truck_pallets['Pallet number'].astype(str))
-                    st.session_state.camion_asignado_actual = detectar_camion_disponible(selected_truck, expected_pallets)
+                    
+                # Siempre recalcular de manera dinámica para no desfasar el estado tras cada escaneo
+                st.session_state.scanned_count = sum(
+                    1 for _, row in st.session_state.truck_pallets.iterrows() 
+                    if is_pallet_scanned(selected_truck, row['Pallet number'])
+                )
+                
+                # DETECTAR CAMIÓN DISPONIBLE PARA ESTE TRUCK (USANDO PALLETSESPERADOS)
+                expected_pallets = set(st.session_state.truck_pallets['Pallet number'].astype(str))
+                st.session_state.camion_asignado_actual = detectar_camion_disponible(selected_truck, expected_pallets)
 
                 truck_pallets = st.session_state.truck_pallets
                 total_pallets = len(truck_pallets)
@@ -1003,7 +1011,12 @@ else:
                     pallet_df = pd.DataFrame(pallet_table_data)
                     st.dataframe(pallet_df, width='stretch')
                 else:
-                    st.warning("No se encontraron pallets para este camión en el rango especificado.")
+                    # Mostrar detalles útiles para saber por qué falló
+                    ti = available_trucks[available_trucks['CAMION'] == selected_truck].iloc[0]
+                    pi = ti.get('PALLET INICIAL', 'N/A')
+                    pf = ti.get('PALLET FINAL', 'N/A')
+                    st.warning(f"⚠️ No se encontraron pallets para este camión en el rango especificado ({pi} - {pf}).")
+                    st.info("💡 Asegúrate de haber subido el Packing List (Excel) correspondiente a este proyecto y que la numeración cuadre con el Shipment.")
 
                 if not puede_escanear:
                     if truck_ya_entregado:
