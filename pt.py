@@ -182,7 +182,7 @@ def detectar_camiones_del_layout():
     
     return sorted(camiones)
 
-def detectar_camion_disponible(truck_packing_list):
+def detectar_camion_disponible(truck_packing_list, expected_pallets=None):
     """Detecta el primer camión disponible basado en el layout y los camiones ya usados"""
     try:
         # Obtener camiones del layout
@@ -190,15 +190,21 @@ def detectar_camion_disponible(truck_packing_list):
         if not camiones_layout:
             return None
         
+        if expected_pallets is None:
+            expected_pallets = set()
+            
         # 1. SI YA TIENE ESCANEOS PREVIOS EN MEMORIA (Ya sincronizados de Supabase):
-        # Buscar si el camión ya tiene al menos una ubicación asignada
+        # Buscar si el camión ya tiene al menos una ubicación asignada y sus pallets coinciden
         for loc, assignments in st.session_state.pallet_assignments.items():
             if assignments:
                 for a in assignments:
                     if str(a.get('camion', '')) == str(truck_packing_list):
-                        match = re.match(r'^(C\d+)-', loc)
-                        if match:
-                            return match.group(1)
+                        # Pertenecerá a este proyecto solo si un pallet suyo está en expected_pallets
+                        # o si no enviamos expected_pallets (para compatibilidad inversa)
+                        if not expected_pallets or str(a.get('pallet', '')) in expected_pallets:
+                            match = re.match(r'^(C\d+)-', loc)
+                            if match:
+                                return match.group(1)
 
         # 2. SI ES NUEVO: Buscar el primer camión físico (C1, C2...) que esté libre
         # Un camión está libre si no tiene NINGÚN pallet de NINGÚN camión de packing list
@@ -569,7 +575,7 @@ else:
         """Carga datos frescos de Supabase y sincroniza el estado local"""
         st.session_state.scans_db = set()
         st.session_state.pallet_assignments = {}
-        st.session_state.delivered_trucks = set()
+        st.session_state.delivered_pallets = set()
         try:
             supabase = get_supabase_client()
             if supabase:
@@ -584,7 +590,7 @@ else:
                     status = str(row.get('status', '')).lower()
 
                     if status == 'entregado':
-                        st.session_state.delivered_trucks.add(camion)
+                        st.session_state.delivered_pallets.add(pallet)
                         continue
 
                     st.session_state.scans_db.add((camion, pallet))
@@ -636,8 +642,8 @@ else:
         if not st.session_state.layout_locations:
             return None, None
                     
-        # DETECTAR CAMIÓN DISPONIBLE AUTOMÁTICAMENTE
-        camion_actual = detectar_camion_disponible(truck_packing_list)
+        # DETECTAR CAMIÓN DISPONIBLE AUTOMÁTICAMENTE (Usamos este pallet como clave única del proyecto)
+        camion_actual = detectar_camion_disponible(truck_packing_list, {str(pallet)})
         if not camion_actual:
             st.error("❌ No hay camiones disponibles en el layout")
             return None, None
@@ -796,7 +802,7 @@ else:
             st.error(f"Error en get_truck_pallets: {e}")
             return pd.DataFrame()
 
-    def deliver_truck(truck):
+    def deliver_truck(truck, expected_pallets):
         """Marcar camión como entregado en Supabase y liberar memoria local"""
         try:
             # Actualizar Supabase: marcar todos los pallets del camión como 'entregado'
@@ -804,9 +810,11 @@ else:
                 try:
                     supabase = get_supabase_client()
                     if supabase:
+                        # Actualizamos por pallet_number para no interferir con otros proyectos
+                        # Si `in_()` solo soporta listas, la convertimos
                         supabase.table('warehouse_occupancy') \
                             .update({"status": "entregado"}) \
-                            .eq("camion", str(truck)) \
+                            .in_("pallet_number", list(expected_pallets)) \
                             .execute()
                 except Exception as e:
                     print(f"Error actualizando Supabase en entrega: {e}")
@@ -815,24 +823,25 @@ else:
             locations_to_remove = []
             for ubicacion, assignments in st.session_state.pallet_assignments.items():
                 if isinstance(assignments, list):
-                    # Filtrar solo los assignments que no son del camión
-                    remaining_assignments = [a for a in assignments if str(a.get('camion', '')) != str(truck)]
+                    # Filtrar solo los assignments que no son nuestros pallets
+                    remaining_assignments = [a for a in assignments if str(a.get('pallet', '')) not in expected_pallets]
                     if remaining_assignments:
                         st.session_state.pallet_assignments[ubicacion] = remaining_assignments
                     else:
                         locations_to_remove.append(ubicacion)
                 else:
-                    if str(assignments.get('camion', '')) == str(truck):
+                    if str(assignments.get('pallet', '')) in expected_pallets:
                         locations_to_remove.append(ubicacion)
                         
             for ubicacion in locations_to_remove:
                 del st.session_state.pallet_assignments[ubicacion]
                         
             # Actualizar scans_db
-            st.session_state.scans_db = {scan for scan in st.session_state.scans_db if scan[0] != str(truck)}
+            st.session_state.scans_db = {scan for scan in st.session_state.scans_db if scan[1] not in expected_pallets}
                         
-            # Marcar como entregado
-            st.session_state.delivered_trucks.add(str(truck))
+            # Marcar como entregado (alojar los pallets entregados)
+            for p in expected_pallets:
+                st.session_state.delivered_pallets.add(p)
 
             # Actualizar Google Sheets
             update_shipment_status_async(truck, "Entregado")
@@ -886,8 +895,9 @@ else:
                         1 for _, row in st.session_state.truck_pallets.iterrows() 
                         if is_pallet_scanned(selected_truck, row['Pallet number'])
                     )
-                    # DETECTAR CAMIÓN DISPONIBLE PARA ESTE TRUCK
-                    st.session_state.camion_asignado_actual = detectar_camion_disponible(selected_truck)
+                    # DETECTAR CAMIÓN DISPONIBLE PARA ESTE TRUCK (USANDO PALLETSESPERADOS)
+                    expected_pallets = set(st.session_state.truck_pallets['Pallet number'].astype(str))
+                    st.session_state.camion_asignado_actual = detectar_camion_disponible(selected_truck, expected_pallets)
 
                 truck_pallets = st.session_state.truck_pallets
                 total_pallets = len(truck_pallets)
@@ -913,7 +923,9 @@ else:
                 st.subheader("🎯 Asignación Automática de Camión")
                             
                 # DETERMINAR SI EL CAMIÓN PUEDE ESCANEAR
-                truck_ya_entregado = str(selected_truck) in st.session_state.delivered_trucks
+                expected_pallets = set(truck_pallets['Pallet number'].astype(str))
+                intersection = expected_pallets.intersection(st.session_state.delivered_pallets)
+                truck_ya_entregado = len(intersection) > 0 if len(expected_pallets) > 0 else False
                 layout_lleno = (st.session_state.camion_asignado_actual is None)
                 puede_escanear = not truck_ya_entregado and not layout_lleno
 
@@ -1321,11 +1333,15 @@ else:
             # Listar camiones listos para entregar (completados pero no entregados)
             completed_trucks = []
             for truck in shipment_df['CAMION'].unique():
-                if str(truck) in st.session_state.delivered_trucks:
-                    continue
-                                
+                
                 truck_data = shipment_df[shipment_df['CAMION'] == truck].iloc[0]
                 truck_pallets_for_delivery = get_truck_pallets(truck_data, pallet_summary)
+                expected_pallets = set(truck_pallets_for_delivery['Pallet number'].astype(str))
+                
+                # Check si este camión ya fue entregado en este proyecto
+                if len(expected_pallets) > 0 and len(expected_pallets.intersection(st.session_state.delivered_pallets)) > 0:
+                    continue
+                                
                 total_pallets_for_delivery = len(truck_pallets_for_delivery)
                 scanned_count_for_delivery = sum(
                     1 for _, row in truck_pallets_for_delivery.iterrows() 
@@ -1343,7 +1359,8 @@ else:
                         completed_trucks.append({
                             'camion': truck,
                             'pallets_escaneados': scanned_count_for_delivery,
-                            'total_pallets': total_pallets_for_delivery
+                            'total_pallets': total_pallets_for_delivery,
+                            'expected_pallets_set': expected_pallets
                         })
                         
             if not completed_trucks:
@@ -1373,7 +1390,7 @@ else:
                                     
                         with col3:
                             if st.button(f"📦 Entregar", key=f"deliver_{truck_info['camion']}"):
-                                if deliver_truck(truck_info['camion']):
+                                if deliver_truck(truck_info['camion'], truck_info['expected_pallets_set']):
                                     st.success(f"✅ Camión {truck_info['camion']} entregado exitosamente!")
                                     st.rerun()
                                 else:
@@ -1382,7 +1399,7 @@ else:
                         st.divider()
                             
                 st.divider()
-                st.info(f"✅ Camiones entregados hoy: {len(st.session_state.delivered_trucks)}")
+                st.info(f"✅ Pallets entregados hoy en total: {len(st.session_state.delivered_pallets)}")
 
 
 
