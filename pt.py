@@ -492,6 +492,8 @@ if 'camion_asignado_actual' not in st.session_state:
     st.session_state.camion_asignado_actual = None
 if 'original_svg_content' not in st.session_state:
     st.session_state.original_svg_content = None
+if 'scan_reset_counter' not in st.session_state:
+    st.session_state.scan_reset_counter = 0
 if 'svg_viewbox' not in st.session_state:
     st.session_state.svg_viewbox = None
 
@@ -1047,13 +1049,17 @@ else:
                     # Determinar qué campo tiene el foco (segundo si ya tenemos el primero)
                     focus_last = bool(st.session_state.scan_first)
 
+                    # Usar un contador para resetear los widgets (Streamlit no permite setear keys directamente)
+                    k1 = f"first_serial_{st.session_state.scan_reset_counter}"
+                    k2 = f"last_serial_{st.session_state.scan_reset_counter}"
+
                     def on_first_serial_change():
-                        val = st.session_state.get('_first_serial_widget', '').strip().rstrip('\r')
+                        val = st.session_state.get(k1, '').strip().rstrip('\r')
                         if val:
                             st.session_state.scan_first = val
 
                     def on_last_serial_change():
-                        val = st.session_state.get('_last_serial_widget', '').strip().rstrip('\r')
+                        val = st.session_state.get(k2, '').strip().rstrip('\r')
                         if val:
                             st.session_state.scan_last = val
                             st.session_state.scan_ready = True
@@ -1062,14 +1068,14 @@ else:
                     with col1:
                         st.text_input(
                             "Primer Serial del Pallet:",
-                            key="_first_serial_widget",
+                            key=k1,
                             on_change=on_first_serial_change,
                             help="Escanea el primer serial y el escáner dará Enter."
                         )
                     with col2:
                         st.text_input(
                             "Último Serial del Pallet:",
-                            key="_last_serial_widget",
+                            key=k2,
                             on_change=on_last_serial_change,
                             help="Escanea el último serial. El pallet se registra automáticamente."
                         )
@@ -1149,9 +1155,8 @@ else:
                                 if success:
                                     st.session_state.scanned_count += 1
                                     st.toast(f"✅ Pallet {pallet_number} escaneado!", icon='🎉')
-                                    # Limpiar widgets para el próximo escaneo
-                                    st.session_state._first_serial_widget = ""
-                                    st.session_state._last_serial_widget = ""
+                                    # Incrementar el contador para resetear los widgets
+                                    st.session_state.scan_reset_counter += 1
                                     st.session_state.scan_first = ""
                                     st.session_state.scan_last = ""
                                     # Refrescar datos y re-renderizar para limpiar inputs y actualizar UI
